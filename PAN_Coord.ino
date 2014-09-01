@@ -3,7 +3,8 @@
 #include <Ethernet.h>
 #include <EthernetUdp.h>
 #include <EEPROM.h>
-#include <mrf24j40.h>
+#include <mrf24j40_driver.h>
+#include <mrf24j40_coord.h>
 #include <avr/wdt.h>
 
 #define PIN_CLK 13 //SPI Clock            DI
@@ -14,7 +15,7 @@
 #define PIN_LED 10 //blinky led
 
 EthernetUDP Udp;
-MRFClass mrf(PIN_CS, PIN_INT, 1);  //Create wireless object
+MRFCoord mrf(PIN_CS, PIN_INT);  //Create wireless object
 
 #define UDP_TX_PACKET_MAX_SIZE 64
 
@@ -24,7 +25,6 @@ unsigned int localPort = 5151;      // local port to listen on
 IPAddress server_ip(192, 168, 1, 200);
 
 bool WD_en;
-volatile uint8_t int_mrf;
 
 void setup() {
   Serial.begin(19200);
@@ -33,7 +33,7 @@ void setup() {
   initialize_ethernet();
   
   WD_en=1;
-  wdt_enable(WDTO_4S);
+  wdt_enable(WDTO_8S);
 }
 
 void initialize_ethernet() {
@@ -60,6 +60,7 @@ void initialize_mrf() {
   SPI.begin();
 
   mrf.reset();
+  //mrf.init_coord();
   mrf.init();
 
   Serial.println("PAN COORD");
@@ -69,32 +70,17 @@ void initialize_mrf() {
 }
 
 void mrf_isr() {
-  int_mrf=1;
+  mrf.int_mrf=1;
 }
 
 void rx_udp_packet(int packetSize) {
   byte packetBuffer[UDP_TX_PACKET_MAX_SIZE]; //buffer to hold incoming packet,
   IPAddress remote;
 
-//  Serial.print("Received packet of size ");
-//  Serial.println(packetSize);
-  //Serial.print("From ");
   remote = Udp.remoteIP();
-//  for (int i =0; i < 4; i++)
-//  {
-//    Serial.print(remote[i], DEC);
-//    if (i < 3)
-//    {
-//      Serial.print(".");
-//    }
-//  }
-//  Serial.print(", port ");
-//  Serial.println(Udp.remotePort());
-
+  
   // read the packet into packetBufffer
   Udp.read(packetBuffer,UDP_TX_PACKET_MAX_SIZE);
-  //Serial.println("Contents:");
-  //Serial.println(packetBuffer);
 
   switch(packetBuffer[0]) {
   case 1: //upd to mrf packet
@@ -102,6 +88,9 @@ void rx_udp_packet(int packetSize) {
     break;
   case 2: //reset uC
     WD_en=0;
+    break;
+  case 3:
+    mrf.send_clients();
     break;
   default:
     Serial.println("unknown UDP packet type");
@@ -121,7 +110,6 @@ void tx_udp_packet() {
   }
   
   Udp.endPacket();
-  mrf._udp_pending = 0;
 }
 
 void loop() {
@@ -133,31 +121,7 @@ void loop() {
     //Serial.println("udp packet");
   }
 
-  mrf.PC_loop();
-
-  if(int_mrf) {
-    byte last_interrupt = mrf.get_interrupts();
-    
-    if(last_interrupt & MRF_I_RXIF) {
-      //Serial.println("rxxing...");
-      mrf.rx_toBuffer();
-    }
-    if(last_interrupt & MRF_I_TXNIF) {
-      //Serial.println("txxing...");
-      mrf.tx_status();
-    }
-    if(last_interrupt & MRF_I_SECIF) {
-      //Serial.println("decrypting...");
-      mrf.decrypt();
-    }
-    
-    if(last_interrupt & 0xE6) {
-      Serial.print("ERR: INT 0x");
-      Serial.println(last_interrupt & 0xE6);
-    }
-    
-    int_mrf=0;
-  }
+  mrf.coord_loop();
 
   if(mrf._rx_count>0) {
     mrf.rx_packet();
@@ -166,6 +130,7 @@ void loop() {
 
   if(mrf._udp_pending>0) {
     tx_udp_packet();
+    mrf._udp_pending = 0;
   }
   
   if(WD_en) {
